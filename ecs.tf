@@ -48,6 +48,12 @@ data "aws_iam_policy_document" "ecs_tasks_trust" {
       type        = "Service"
       identifiers = ["ecs-tasks.amazonaws.com"]
     }
+    # Confused-deputy protection: only assume on behalf of resources in this account.
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
   }
 }
 
@@ -57,6 +63,12 @@ data "aws_iam_policy_document" "scheduler_trust" {
     principals {
       type        = "Service"
       identifiers = ["scheduler.amazonaws.com"]
+    }
+    # Confused-deputy protection: only assume on behalf of resources in this account.
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
     }
   }
 }
