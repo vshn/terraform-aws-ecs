@@ -10,7 +10,7 @@ resource "aws_ecr_repository" "this" {
   for_each             = toset(var.ecr_repo_names)
   name                 = each.value
   force_delete         = true
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = var.ecr_image_tag_mutability
 
   image_scanning_configuration {
     scan_on_push = true
@@ -266,5 +266,5 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
 
 resource "aws_cloudwatch_log_group" "ecs_cluster_logs" {
   name              = "/ecs/${var.cluster_name}"
-  retention_in_days = var.log_retention # Make this a variable if you want flexibility
+  retention_in_days = var.log_retention
 }
