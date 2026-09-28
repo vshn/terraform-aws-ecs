@@ -1,44 +1,91 @@
-# ECS Shared Base Module
+# Terraform Module for AWS ECS
+
+Shared ECS Fargate foundation: cluster, optional ECR repositories, the IAM roles
+tasks and scheduled jobs need, and a log group.
 
 ## Overview
 
-This reusable module creates the shared ECS foundation that is consumed by each environment-specific stack. It provisions the cluster control plane, ECR repositories for the Drupal images, IAM roles required by tasks and the EventBridge Scheduler, and optional access permissions to supporting AWS services (Secrets Manager, SSM Parameter Store, EFS access points and S3 buckets).
+Provisions the parts of an ECS setup that are identical across environments:
 
-## Architecture
+- **ECS cluster** for Fargate with Container Insights and
+  `FARGATE`/`FARGATE_SPOT` capacity providers (`FARGATE` default, base 1).
+- **ECR repositories** (optional) with scan-on-push, `force_delete` and a
+  keep-last-30-images lifecycle policy.
+- **Task execution role** — `AmazonECSTaskExecutionRolePolicy` plus read access
+  to exactly the Secrets Manager secrets and SSM parameters the caller names.
+  Each policy is only created when its input is non-empty.
+- **Task role** — ECS Exec (`ssmmessages:*`), optional EFS access point mount
+  permissions, and any additional policy ARNs the caller attaches.
+- **EventBridge Scheduler role** — `ecs:RunTask` on `task-definition/*` plus
+  `iam:PassRole` for the two roles above, restricted to
+  `ecs-tasks.amazonaws.com`.
+- **CloudWatch log group** `/ecs/<cluster_name>` with configurable retention.
 
-The module defines the following building blocks:
-
-- An ECS cluster configured for Fargate workloads.
-- A configurable set of ECR repositories to host container images.
-- IAM roles and policies for ECS task execution, application task access, and EventBridge Scheduler to trigger one-off tasks.
-- Optional IAM permissions to read secrets, parameters, mount EFS access points, and access S3 buckets provided by the caller.
-
-The module is stateless: all environment specific wiring (such as subnet selection, security groups or task definitions) happens in the consuming stack.
+Task definitions, services, subnets, security groups, load balancers and
+autoscaling stay in the consuming stack; the module creates no networking.
 
 ## Inputs
 
-| Name                        | Description                                                           | Type              | Default  | Required |
-|-----------------------------|-----------------------------------------------------------------------|-------------------|----------|----------|
-| `cluster_name`              | Name of the ECS cluster                                               | `string`          | `None`   | yes      |
-| `ecr_repo_names`            | List of ECR repository names                                          | `${list(string)}` | `[]`     | yes      |
-| `secret_arns`               | List of secret arns to grant access                                   | `${list(string)}` | `None`   | yes      |
-| `parameter_arns`            | List of parameter arns to grant access                                | `${list(string)}` | `None`   | yes      |
-| `ecs_task_role_policy_arns` | List of additional IAM policy ARNs to attach to the ECS task role.    | `${list(string)}` | `[]`     | yes      |
-| `efs_access_point_arns`     | List of EFS Access Point ARNs this service should be allowed to mount | `${list(string)}` | `[]`     | yes      |
-| `tags`                      | Common tags                                                           | `${map(string)}`  | `{}`     | yes      |
+| Name | Description | Type | Default | Required |
+|---|---|---|---|---|
+| `cluster_name` | Cluster name, also the prefix for all IAM roles, policies and the log group | `string` | — | yes |
+| `secret_arns` | Secrets Manager ARNs the task execution role may read (`[]` creates no policy) | `list(string)` | — | yes |
+| `parameter_arns` | SSM parameter ARNs the task execution role may read (`[]` creates no policy) | `list(string)` | — | yes |
+| `ecr_repo_names` | ECR repositories to create; leave empty if managed elsewhere | `list(string)` | `[]` | no |
+| `ecr_image_tag_mutability` | `MUTABLE` or `IMMUTABLE` for the created repositories | `string` | `"MUTABLE"` | no |
+| `ecs_task_role_policy_arns` | Additional IAM policy ARNs to attach to the task role | `list(string)` | `[]` | no |
+| `efs_access_point_arns` | EFS access point ARNs the task role may mount | `list(string)` | `[]` | no |
+| `log_retention` | Retention in days for `/ecs/<cluster_name>` | `number` | `30` | no |
 
 ## Outputs
 
 | Name | Description |
-| --- | --- |
-| `ecr_repository_urls` | Map of ECR repository URLs keyed by repository name |
-| `ecr_repository_arns` | Map of ECR repository ARNs keyed by repository name |
-| `cluster_id` | ECS cluster ID |
-| `cluster_name` | ECS cluster name |
-| `task_execution_role_arn` | ARN of the task execution role |
-| `task_role_arn` | ARN of the ECS task role (used by the application) |
-| `scheduler_role_arn` | ARN of the ECS task scheduler role (used by cronjobs) |
+|---|---|
+| `cluster_id` | Cluster ID (the cluster ARN — use as a scheduler target) |
+| `cluster_name` | Cluster name |
+| `task_execution_role_arn` | Use as `execution_role_arn` in task definitions |
+| `task_role_arn` | Use as `task_role_arn` in task definitions |
+| `scheduler_role_arn` | Use as the `role_arn` of an EventBridge schedule target |
+| `ecr_repository_urls` | Map of repository name → URL |
+| `ecr_repository_arns` | Map of repository name → ARN |
 
 ## Usage
 
-The environment stacks call this module and pass in their networking, storage and IAM dependencies. The outputs are later used to create ECS services.
+```hcl
+module "ecs" {
+  source = "git::https://github.com/vshn/terraform-aws-ecs.git?ref=v1.0.0"
+
+  cluster_name = var.environment
+
+  ecr_repo_names = ["app-php", "app-nginx"]
+
+  secret_arns    = [module.aurora_database.db_secret_arn]
+  parameter_arns = ["arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/*"]
+
+  ecs_task_role_policy_arns = [
+    aws_iam_policy.s3_access.arn,
+    aws_iam_policy.ses_access.arn,
+  ]
+
+  efs_access_point_arns = module.efs.efs_access_point_arns
+  log_retention         = 365
+}
+
+resource "aws_ecs_task_definition" "app" {
+  family             = "app"
+  execution_role_arn = module.ecs.task_execution_role_arn
+  task_role_arn      = module.ecs.task_role_arn
+  # ...
+}
+```
+
+## Development
+
+CI runs `terraform init -backend=false`, `terraform validate` and
+`terraform fmt -check -recursive -diff`.
+
+Merging a pull request labelled `bump:major`, `bump:minor` or `bump:patch` tags
+the merge commit and creates a GitHub release; without such a label no release
+is cut. Scaffolding under `.github/`, `renovate.json` and `.gitignore` is managed
+by [`terraform-module-template`](https://github.com/vshn/terraform-module-template)
+via cruft — do not edit it directly.

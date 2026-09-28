@@ -9,6 +9,17 @@ variable "ecr_repo_names" {
   default     = []
 }
 
+variable "ecr_image_tag_mutability" {
+  type        = string
+  description = "Tag mutability for the created ECR repositories. IMMUTABLE prevents overwriting an existing tag."
+  default     = "MUTABLE"
+
+  validation {
+    condition     = contains(["MUTABLE", "IMMUTABLE"], var.ecr_image_tag_mutability)
+    error_message = "ecr_image_tag_mutability must be either MUTABLE or IMMUTABLE."
+  }
+}
+
 variable "secret_arns" {
   type        = list(string)
   description = "List of secret arns to grant access"
